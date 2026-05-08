@@ -1,0 +1,391 @@
+---
+title: 'Outbreak Intelligence: Early Warning Risk Model for Infectious Disease Vulnerability'
+author: "Rebecca Rose"
+date: "2026-05-08"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(WDI)
+library(tidyverse)
+library(corrplot)
+library(ggplot2)
+library(scales)
+library(ggthemes)
+library(sf)
+library(rnaturalearth)
+library(rnaturalearthdata)
+library(plotly)
+```
+
+```{r}
+theme_set(theme_minimal(base_size = 13))
+```
+
+## Load data
+```{r}
+raw_data <- WDI(
+  country = "all",
+  indicator = c(
+    health_exp = "SH.XPD.CHEX.PC.CD",
+    life_exp   = "SP.DYN.LE00.IN",
+    beds       = "SH.MED.BEDS.ZS",
+    gdp        = "NY.GDP.PCAP.CD",
+    urban      = "SP.URB.TOTL.IN.ZS"
+  ),
+  start = 2018,
+  end = 2022,
+  extra = TRUE
+)
+```
+
+## Clean data
+```{r}
+df <- raw_data %>%
+  select(country, year, health_exp, life_exp, beds, gdp, urban) %>%
+  drop_na()
+```
+
+## Reduce noise in Country level (Aggregate)
+```{r}
+df_country <- df %>%
+  group_by(country) %>%
+  summarise(
+    health_exp = mean(health_exp, na.rm = TRUE),
+    life_exp   = mean(life_exp, na.rm = TRUE),
+    beds       = mean(beds, na.rm = TRUE),
+    gdp        = mean(gdp, na.rm = TRUE),
+    urban      = mean(urban, na.rm = TRUE)
+  )
+```
+
+```{r}
+summary(df_country)
+```
+
+
+```{r}
+ggplot(df_country, aes(x = gdp, y = life_exp)) +
+  geom_point(color = "skyblue", alpha = 0.7, size = 2) +
+  geom_smooth(method = "lm", color = "red", se = FALSE) +
+  labs(
+    title = "GDP vs Life Expectancy",
+    x = "GDP per capita",
+    y = "Life Expectancy"
+  ) +
+  theme_minimal(base_size = 13)
+```
+
+## Risk index
+```{r}
+df_country <- df_country %>%
+  mutate(
+    risk_score =
+      scale(gdp)[,1] * -0.25 +
+      scale(health_exp)[,1] * -0.30 +
+      scale(beds)[,1] * -0.20 +
+      scale(life_exp)[,1] * -0.20 +
+      scale(urban)[,1] * 0.05
+  )
+```
+
+```{r}
+df_country <- df_country %>%
+  mutate(
+    risk_level = case_when(
+      risk_score >= quantile(risk_score, 0.75) ~ "High Risk",
+      risk_score >= quantile(risk_score, 0.40) ~ "Medium Risk",
+      TRUE ~ "Low Risk"
+    )
+  )
+```
+
+```{r}
+df_plot <- df_country %>%
+  arrange(desc(risk_score)) %>%
+  slice_head(n = 15)
+
+ggplot(df_plot, aes(x = reorder(country, risk_score), y = risk_score)) +
+  geom_col(fill = "red") +
+  coord_flip() +
+  labs(
+    title = "Top 15 Countries by Outbreak Vulnerability Risk",
+    x = "Country",
+    y = "Risk Score"
+  ) +
+  theme_minimal(base_size = 13)
+```
+
+```{r}
+model <- lm(risk_score ~ gdp + health_exp + beds + life_exp + urban, data = df_country)
+summary(model)
+```
+
+```{r}
+model <- lm(risk_score ~ gdp + health_exp + beds + life_exp + urban, data = df_country)
+
+importance <- summary(model)$coefficients
+
+importance_df <- data.frame(
+  variable = rownames(importance),
+  estimate = importance[,1]
+)
+
+importance_df <- importance_df %>%
+  filter(variable != "(Intercept)")
+```
+
+```{r}
+ggplot(importance_df, aes(x = reorder(variable, estimate), y = estimate)) +
+  geom_col(fill = "darkgreen") +
+  coord_flip() +
+  labs(
+    title = "Key Drivers of Outbreak Risk",
+    x = "Variable",
+    y = "Impact (Coefficient)"
+  ) +
+  theme_minimal(base_size = 13)
+```
+
+```{r}
+### The analysis shows that healthcare expenditure and GDP per capita are the strongest protective factors against outbreak vulnerability. Countries with lower healthcare investment consistently cluster in the high-risk category, suggesting structural weaknesses in health system resilience rather than short-term fluctuations.
+```
+
+```{r}
+world <- ne_countries(scale = "medium", returnclass = "sf")
+```
+
+```{r}
+map_df <- world %>%
+  left_join(df_country, by = c("name" = "country"))
+```
+
+
+```{r}
+### Plotting risk map
+ggplot(map_df) +
+  geom_sf(aes(fill = risk_score), color = "white", size = 0.1) +
+  scale_fill_gradient(low = "green", high = "red") +
+  labs(
+    title = "Global Outbreak Vulnerability Risk Map",
+    fill = "Risk Score"
+  ) +
+  theme_minimal()
+```
+
+```{r}
+### Standardization
+df_country_scaled <- df_country %>%
+  mutate(across(c(gdp, health_exp, beds, life_exp, urban), scale))
+
+df_country <- df_country_scaled %>%
+  mutate(
+    risk_score =
+      (-gdp) +
+      (-health_exp) +
+      (-beds) +
+      (-life_exp) +
+      (urban)
+  )
+```
+
+```{r}
+### Grouping countries into risk profiles.
+set.seed(123)
+
+clusters <- kmeans(df_country_scaled %>% select(gdp, health_exp, beds, life_exp, urban),
+                   centers = 3)
+
+df_country$cluster <- as.factor(clusters$cluster)
+```
+
+```{r}
+### Visualize clusters.
+library(ggplot2)
+library(dplyr)
+library(ggrepel)
+
+# Create human-readable cluster labels
+df_country <- df_country %>%
+  mutate(
+    cluster_label = case_when(
+      cluster == 1 ~ "High Income / Low Risk",
+      cluster == 2 ~ "Transitional Health Systems",
+      cluster == 3 ~ "High Vulnerability"
+    )
+  )
+
+# Final visualization
+ggplot(df_country, aes(x = gdp, y = life_exp, color = cluster_label)) +
+
+  # points
+  geom_point(size = 3, alpha = 0.8) +
+
+  # optional country labels (comment out if too busy)
+  geom_text_repel(
+  data = df_country %>%
+    group_by(cluster_label) %>%
+    slice_max(gdp, n = 3),
+  aes(label = country),
+  size = 3,
+  max.overlaps = Inf,
+  show.legend = FALSE
+) +
+scale_color_manual(values = c(
+  "High Income / Low Risk" = "#2ECC71",
+  "Transitional Health Systems" = "#F39C12",
+  "High Vulnerability" = "#C0392B"
+)) +
+labs(
+  title = "Country Health System Risk Clusters",
+  subtitle = "Clusters based on economic capacity, healthcare investment, and health outcomes",
+  x = "Economic Capacity (GDP per capita)",
+  y = "Life Expectancy",
+  color = "Risk Category"
+) +
+theme_minimal(base_size = 13) +
+theme(
+  plot.title = element_text(face = "bold"),
+  legend.position = "right"
+)
+```
+
+This study developed a composite outbreak vulnerability index using global health and economic indicators. Results show clear stratification of countries into distinct risk groups driven primarily by healthcare investment, GDP per capita, and system capacity indicators such as hospital bed availability.
+
+Spatial mapping reveals strong geographic clustering of high-risk countries in lower-income regions, while clustering analysis confirms structural separation between high-capacity and low-capacity health systems.
+
+These findings suggest that outbreak preparedness is strongly determined by long-term system investment rather than short-term variability.
+
+```{r}
+# Ensure labels exist
+df_country <- df_country %>%
+  mutate(
+    cluster_label = case_when(
+      cluster == 1 ~ "High Income / Low Risk",
+      cluster == 2 ~ "Transitional Health Systems",
+      cluster == 3 ~ "High Vulnerability"
+    )
+  )
+
+# Build ggplot base
+p <- ggplot(df_country, aes(
+  x = gdp,
+  y = life_exp,
+  color = cluster_label,
+  text = paste0(
+    "Country: ", country,
+    "<br>GDP per capita: ", round(gdp, 0),
+    "<br>Life Expectancy: ", round(life_exp, 1),
+    "<br>Cluster: ", cluster_label
+  )
+)) +
+  geom_point(size = 3, alpha = 0.8) +
+  scale_color_manual(values = c(
+    "High Income / Low Risk" = "#2ECC71",
+    "Transitional Health Systems" = "#F39C12",
+    "High Vulnerability" = "#C0392B"
+  )) +
+  labs(
+    title = "Country Health System Risk Clusters (Interactive)",
+    x = "Economic Capacity (GDP per capita)",
+    y = "Life Expectancy",
+    color = "Risk Category"
+  ) +
+  theme_minimal(base_size = 13)
+
+# Convert to plotly
+ggplotly(p, tooltip = "text")
+```
+
+```{r}
+cluster_summary <- df_country %>%
+  group_by(cluster_label) %>%
+  summarise(
+    avg_gdp = mean(gdp, na.rm = TRUE),
+    avg_life_exp = mean(life_exp, na.rm = TRUE),
+    avg_health_exp = mean(health_exp, na.rm = TRUE),
+    avg_beds = mean(beds, na.rm = TRUE),
+    n = n()
+  )
+
+cluster_summary
+```
+
+```{r}
+### Cluster profiles show clear stratification of health system capacity. High-income clusters demonstrate substantially higher life expectancy and healthcare investment compared to high vulnerability groups.
+```
+
+```{r}
+
+# ============================================================
+# 1. CLUSTER PROFILING (DESCRIBES EACH GROUP)
+# ============================================================
+
+cluster_summary <- df_country %>%
+  group_by(cluster_label) %>%
+  summarise(
+    avg_gdp = mean(gdp, na.rm = TRUE),
+    avg_life_exp = mean(life_exp, na.rm = TRUE),
+    avg_health_exp = mean(health_exp, na.rm = TRUE),
+    avg_beds = mean(beds, na.rm = TRUE),
+    n = n()
+  )
+
+# View cluster structure
+cluster_summary
+
+
+# ============================================================
+# 2. STATISTICAL TEST: ARE CLUSTERS REALLY DIFFERENT?
+# ============================================================
+
+# One-way ANOVA to test if life expectancy differs across clusters
+anova_model <- aov(life_exp ~ cluster_label, data = df_country)
+
+summary(anova_model)
+
+# Post-hoc test (which clusters differ from each other)
+TukeyHSD(anova_model)
+
+
+# ============================================================
+# 3. STANDARDIZED MODEL (FAIR COMPARISON OF DRIVERS)
+# ============================================================
+
+# Standardize variables so coefficients are comparable
+df_std <- df_country %>%
+  mutate(across(c(gdp, health_exp, beds, life_exp, urban, risk_score), scale))
+
+# Regression: what drives outbreak risk?
+model_std <- lm(risk_score ~ gdp + health_exp + beds + life_exp + urban, data = df_std)
+
+summary(model_std)
+
+
+# ============================================================
+# 4. VISUALIZE DRIVERS OF RISK
+# ============================================================
+
+coef_df <- data.frame(
+  variable = names(coef(model_std)),
+  estimate = coef(model_std)
+) %>%
+  filter(variable != "(Intercept)")
+
+# Coefficient plot
+ggplot(coef_df, aes(x = reorder(variable, estimate), y = estimate)) +
+  geom_col(fill = "#34495E") +
+  coord_flip() +
+  labs(
+    title = "Standardized Drivers of Outbreak Risk",
+    x = "Variable",
+    y = "Effect on Risk Score"
+  ) +
+  theme_minimal(base_size = 13)
+```
