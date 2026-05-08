@@ -1,7 +1,7 @@
 # global-outbreak-risk-analytics
-![Outbreak Risk Visualization](Image4.png)
+![Outbreak Risk Visualization](Image4)
 <div align="center">
-  <img src="images/Image4.png" alt="Outbreak Risk Analytics" width="600px">
+  <img src="Image4" alt="Outbreak Risk Analytics" width="600px">
 </div>
 ## Overview
 
