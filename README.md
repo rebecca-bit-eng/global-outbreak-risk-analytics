@@ -1,4 +1,8 @@
 # global-outbreak-risk-analytics
+![Outbreak Risk Visualization](Image4.png)
+<div align="center">
+  <img src="images/Image4.png" alt="Outbreak Risk Analytics" width="600px">
+</div>
 ## Overview
 
 This project explores global infectious disease vulnerability using country-level health and economic indicators from the World Bank. The analysis combines statistical modeling, clustering techniques, and epidemiological risk profiling to identify structural patterns associated with outbreak susceptibility across health systems.
